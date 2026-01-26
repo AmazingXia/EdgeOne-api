@@ -23,11 +23,34 @@ function loadSharp() {
     let sharpModule;
     try {
       // 使用本地 sharp 实现
-      const localSharpPath = '../../src/lib/sharp/lib/index.js';
+      // 尝试多个可能的路径，因为 EdgeOne Pages 构建后的路径可能不同
+      const possiblePaths = [
+        '../lib/sharp/lib/index.js',  // node-functions/lib/sharp (优先)
+        '../../src/lib/sharp/lib/index.js',
+        '../../../src/lib/sharp/lib/index.js',
+        './lib/sharp/lib/index.js'
+      ];
+
       const requireFunc = require;
-      sharpModule = requireFunc(localSharpPath);
-      if (isDev) {
-        console.log('✅ 使用本地 Sharp 模块');
+      let loaded = false;
+      for (const localSharpPath of possiblePaths) {
+        try {
+          sharpModule = requireFunc(localSharpPath);
+          loaded = true;
+          if (isDev) {
+            console.log('✅ 使用本地 Sharp 模块，路径:', localSharpPath);
+          }
+          break;
+        } catch (pathError) {
+          // 继续尝试下一个路径
+          if (isDev) {
+            console.warn('⚠️  路径失败:', localSharpPath, pathError.message);
+          }
+        }
+      }
+
+      if (!loaded) {
+        throw new Error('所有本地路径都失败');
       }
     } catch (localError) {
       if (isDev) {
