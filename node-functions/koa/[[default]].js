@@ -3,22 +3,13 @@ import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
 import fs from 'node:fs';
 import path from 'node:path';
+import sharpModule from './lib/sharp/lib/index.js';
 
 // 直接导入本地 sharp 模块
-let sharp = null;
-let sharpError = null;
+const sharp = sharpModule.default || sharpModule;
 
-try {
-  const sharpModule = await import('./lib/sharp/lib/index.js');
-  sharp = sharpModule.default || sharpModule;
-  console.log('✅ Sharp 模块加载成功');
-  console.log('📦 Sharp 版本:', sharp?.versions?.sharp || 'unknown');
-} catch (error) {
-  sharpError = error;
-  console.error('❌ Sharp 模块加载失败:', error.message);
-  console.error('📋 错误堆栈:', error.stack);
-  console.error('💡 提示: 图片压缩功能将不可用');
-}
+console.log('✅ Sharp 模块加载成功');
+console.log('📦 Sharp 版本:', sharp?.versions?.sharp || 'unknown');
 
 // Create Koa application
 const app = new Koa();
@@ -182,7 +173,6 @@ router.get('/', async (ctx) => {
         '/compress/upload': 'POST - 上传并压缩图片（multipart/form-data）'
       },
       sharp: sharpStatus,
-      ...(sharpError && { sharpError: sharpError.message }),
       directory: currentDirInfo,
       tree: directoryTree
     };
@@ -213,18 +203,7 @@ router.post('/compress', async (ctx) => {
     return;
   }
 
-  // 检查 sharp 是否可用
-  if (!sharp) {
-    ctx.status = 503;
-    ctx.body = {
-      error: '图片处理服务不可用',
-      message: sharpError?.message || 'Sharp 模块未正确加载',
-      solution: '请检查 EdgeOne Pages 是否支持原生模块，或联系管理员',
-      stack: sharpError?.stack
-    };
-    console.error('❌ Sharp 模块不可用，无法处理图片压缩请求');
-    return;
-  }
+  // sharp 已通过静态导入加载，直接使用
 
   try {
     let imageBuffer;
@@ -321,18 +300,7 @@ router.post('/compress', async (ctx) => {
  * Query 参数: quality, width, height, format
  */
 router.post('/compress/upload', async (ctx) => {
-  // 检查 sharp 是否可用
-  if (!sharp) {
-    ctx.status = 503;
-    ctx.body = {
-      error: '图片处理服务不可用',
-      message: sharpError?.message || 'Sharp 模块未正确加载',
-      solution: '请检查 EdgeOne Pages 是否支持原生模块，或联系管理员',
-      stack: sharpError?.stack
-    };
-    console.error('❌ Sharp 模块不可用，无法处理图片上传压缩请求');
-    return;
-  }
+  // sharp 已通过静态导入加载，直接使用
 
   try {
     // 从 query 参数获取压缩选项
