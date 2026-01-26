@@ -4,101 +4,20 @@ import bodyParser from 'koa-bodyparser';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// 尝试使用 ES6 import 导入本地 sharp（让构建系统自动处理）
+// 直接导入本地 sharp 模块
 let sharp = null;
 let sharpError = null;
-let sharpLoaded = false;
 
-// 延迟加载 sharp 的函数 - 使用本地 sharp 实现
-async function loadSharp() {
-  if (sharpLoaded) {
-    return { sharp, sharpError };
-  }
-
-  sharpLoaded = true;
-  try {
-    // 优先尝试使用本地 sharp 实现
-    // EdgeOne Pages 会将 node-functions/koa 下的所有文件打包
-    // 所以 sharp 应该放在 node-functions/koa/lib/sharp 目录下
-    let sharpModule;
-    try {
-      // 尝试使用动态 import（ES6 模块）
-      // 这样构建系统可能会自动包含这些文件
-      try {
-        const sharpModule_import = await import('./lib/sharp/lib/index.js');
-        sharpModule = sharpModule_import.default || sharpModule_import;
-        console.log('✅ 使用本地 Sharp 模块（ES6 import）');
-      } catch (importError) {
-        console.warn('⚠️  ES6 import 失败，尝试 require:', importError.message);
-        // 回退到 require
-        const requireFunc = require;
-        const possiblePaths = [
-          './lib/sharp/lib/index.js',  // node-functions/koa/lib/sharp (优先)
-          '../lib/sharp/lib/index.js',
-          '../../lib/sharp/lib/index.js'
-        ];
-
-        let loaded = false;
-        for (const localSharpPath of possiblePaths) {
-          try {
-            sharpModule = requireFunc(localSharpPath);
-            loaded = true;
-            console.log('✅ 使用本地 Sharp 模块（require），路径:', localSharpPath);
-            break;
-          } catch (pathError) {
-            console.warn('⚠️  路径失败:', localSharpPath, pathError.message);
-          }
-        }
-
-        if (!loaded) {
-          // 尝试使用绝对路径
-          const currentDir = __dirname || '/var/user';
-          const possibleAbsolutePaths = [
-            path.join(currentDir, 'lib/sharp/lib/index.js'),
-            path.join(currentDir, 'node-functions/koa/lib/sharp/lib/index.js')
-          ];
-
-          for (const absolutePath of possibleAbsolutePaths) {
-            try {
-              if (fs.existsSync(absolutePath)) {
-                sharpModule = requireFunc(absolutePath);
-                loaded = true;
-                console.log('✅ 使用本地 Sharp 模块（绝对路径）:', absolutePath);
-                break;
-              }
-            } catch (absError) {
-              // 继续尝试
-            }
-          }
-
-          if (!loaded) {
-            throw new Error('所有本地路径都失败');
-          }
-        }
-      }
-    } catch (localError) {
-      console.warn('⚠️  本地 Sharp 加载失败，尝试使用 npm 包:', localError.message);
-      // 回退到 npm 包的 sharp
-      const loadModule = new Function('moduleName', 'return require(moduleName)');
-      const moduleName = 'sharp';
-      sharpModule = loadModule(moduleName);
-      console.log('✅ 使用 npm 包的 Sharp 模块');
-    }
-
-    sharp = sharpModule.default || sharpModule;
-    console.log('✅ Sharp 模块加载成功');
-    console.log('📦 Sharp 版本:', sharp.versions?.sharp || 'unknown');
-  } catch (error) {
-    sharpError = error;
-    console.error('❌ Sharp 模块加载失败:', error.message);
-    console.error('📋 错误堆栈:', error.stack);
-    console.error('💡 提示: 图片压缩功能将不可用');
-    console.error('💡 解决方案:');
-    console.error('   1. 确保本地 sharp 代码在 node-functions/koa/lib/sharp 目录');
-    console.error('   2. 或确保已安装依赖: pnpm install');
-    console.error('   3. 检查 EdgeOne Pages 是否支持原生模块');
-  }
-  return { sharp, sharpError };
+try {
+  const sharpModule = await import('./lib/sharp/lib/index.js');
+  sharp = sharpModule.default || sharpModule;
+  console.log('✅ Sharp 模块加载成功');
+  console.log('📦 Sharp 版本:', sharp?.versions?.sharp || 'unknown');
+} catch (error) {
+  sharpError = error;
+  console.error('❌ Sharp 模块加载失败:', error.message);
+  console.error('📋 错误堆栈:', error.stack);
+  console.error('💡 提示: 图片压缩功能将不可用');
 }
 
 // Create Koa application
@@ -254,8 +173,7 @@ router.get('/', async (ctx) => {
     };
 
     // 检查 sharp 状态
-    const { sharp: sharpModule } = await loadSharp();
-    const sharpStatus = sharpModule ? '可用' : '不可用';
+    const sharpStatus = sharp ? '可用' : '不可用';
 
     ctx.body = {
       message: 'Hello from Koa on Node Functions!',
@@ -295,15 +213,14 @@ router.post('/compress', async (ctx) => {
     return;
   }
 
-  // 延迟加载并检查 sharp 是否可用
-  const { sharp: sharpModule, sharpError: error } = await loadSharp();
-  if (!sharpModule) {
+  // 检查 sharp 是否可用
+  if (!sharp) {
     ctx.status = 503;
     ctx.body = {
       error: '图片处理服务不可用',
-      message: error?.message || 'Sharp 模块未正确加载',
+      message: sharpError?.message || 'Sharp 模块未正确加载',
       solution: '请检查 EdgeOne Pages 是否支持原生模块，或联系管理员',
-      stack: error?.stack
+      stack: sharpError?.stack
     };
     console.error('❌ Sharp 模块不可用，无法处理图片压缩请求');
     return;
@@ -332,7 +249,7 @@ router.post('/compress', async (ctx) => {
     }
 
     // 使用 sharp 处理图片
-    let sharpInstance = sharpModule(imageBuffer);
+    let sharpInstance = sharp(imageBuffer);
 
     // 调整尺寸
     if (width || height) {
@@ -373,8 +290,8 @@ router.post('/compress', async (ctx) => {
     }
 
     // 获取原始和压缩后的信息
-    const originalInfo = await sharpModule(imageBuffer).metadata();
-    const compressedInfo = await sharpModule(outputBuffer).metadata();
+    const originalInfo = await sharp(imageBuffer).metadata();
+    const compressedInfo = await sharp(outputBuffer).metadata();
     const originalSize = imageBuffer.length;
     const compressedSize = outputBuffer.length;
     const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(2);
@@ -404,15 +321,14 @@ router.post('/compress', async (ctx) => {
  * Query 参数: quality, width, height, format
  */
 router.post('/compress/upload', async (ctx) => {
-  // 延迟加载并检查 sharp 是否可用
-  const { sharp: sharpModule, sharpError: error } = await loadSharp();
-  if (!sharpModule) {
+  // 检查 sharp 是否可用
+  if (!sharp) {
     ctx.status = 503;
     ctx.body = {
       error: '图片处理服务不可用',
-      message: error?.message || 'Sharp 模块未正确加载',
+      message: sharpError?.message || 'Sharp 模块未正确加载',
       solution: '请检查 EdgeOne Pages 是否支持原生模块，或联系管理员',
-      stack: error?.stack
+      stack: sharpError?.stack
     };
     console.error('❌ Sharp 模块不可用，无法处理图片上传压缩请求');
     return;
@@ -475,7 +391,7 @@ router.post('/compress/upload', async (ctx) => {
     }
 
     // 使用 sharp 处理图片
-    let sharpInstance = sharpModule(imageBuffer);
+    let sharpInstance = sharp(imageBuffer);
 
     // 调整尺寸
     if (width || height) {
@@ -516,8 +432,8 @@ router.post('/compress/upload', async (ctx) => {
     }
 
     // 获取原始和压缩后的信息
-    const originalInfo = await sharpModule(imageBuffer).metadata();
-    const compressedInfo = await sharpModule(outputBuffer).metadata();
+    const originalInfo = await sharp(imageBuffer).metadata();
+    const compressedInfo = await sharp(outputBuffer).metadata();
     const originalSize = imageBuffer.length;
     const compressedSize = outputBuffer.length;
     const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(2);
