@@ -2,9 +2,6 @@ import Koa from 'koa';
 import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
 
-// 检测是否为开发环境
-const isDev = process.env.NODE_ENV !== 'production' || process.env.EDGEONE_DEV === 'true';
-
 // 延迟加载 sharp - 避免在模块加载时失败
 let sharp = null;
 let sharpError = null;
@@ -23,27 +20,42 @@ function loadSharp() {
     let sharpModule;
     try {
       // 使用本地 sharp 实现
-      // 尝试多个可能的路径，因为 EdgeOne Pages 构建后的路径可能不同
+      // EdgeOne Pages 会将 node-functions/koa 下的所有文件打包
+      // 所以 sharp 应该放在 node-functions/koa/lib/sharp 目录下
       const possiblePaths = [
-        '../lib/sharp/lib/index.js',  // node-functions/lib/sharp (优先)
-        '../../src/lib/sharp/lib/index.js',
-        '../../../src/lib/sharp/lib/index.js',
-        './lib/sharp/lib/index.js'
+        './lib/sharp/lib/index.js',  // node-functions/koa/lib/sharp (优先)
+        '../lib/sharp/lib/index.js',
+        '../../lib/sharp/lib/index.js'
       ];
 
       const requireFunc = require;
+      const path = require('path');
+      const fs = require('fs');
       let loaded = false;
-      for (const localSharpPath of possiblePaths) {
-        try {
-          sharpModule = requireFunc(localSharpPath);
+
+      // 首先尝试使用 __dirname 构建绝对路径
+      try {
+        const currentDir = __dirname || path.dirname(require.resolve('./'));
+        const absolutePath = path.resolve(currentDir, '../lib/sharp/lib/index.js');
+        if (fs.existsSync(absolutePath)) {
+          sharpModule = requireFunc(absolutePath);
           loaded = true;
-          if (isDev) {
+          console.log('✅ 使用本地 Sharp 模块（绝对路径）:', absolutePath);
+        }
+      } catch (absError) {
+        console.warn('⚠️  绝对路径失败:', absError.message);
+      }
+
+      // 如果绝对路径失败，尝试相对路径
+      if (!loaded) {
+        for (const localSharpPath of possiblePaths) {
+          try {
+            sharpModule = requireFunc(localSharpPath);
+            loaded = true;
             console.log('✅ 使用本地 Sharp 模块，路径:', localSharpPath);
-          }
-          break;
-        } catch (pathError) {
-          // 继续尝试下一个路径
-          if (isDev) {
+            break;
+          } catch (pathError) {
+            // 继续尝试下一个路径
             console.warn('⚠️  路径失败:', localSharpPath, pathError.message);
           }
         }
@@ -53,34 +65,26 @@ function loadSharp() {
         throw new Error('所有本地路径都失败');
       }
     } catch (localError) {
-      if (isDev) {
-        console.warn('⚠️  本地 Sharp 加载失败，尝试使用 npm 包:', localError.message);
-      }
+      console.warn('⚠️  本地 Sharp 加载失败，尝试使用 npm 包:', localError.message);
       // 回退到 npm 包的 sharp
       const loadModule = new Function('moduleName', 'return require(moduleName)');
       const moduleName = 'sharp';
       sharpModule = loadModule(moduleName);
-      if (isDev) {
-        console.log('✅ 使用 npm 包的 Sharp 模块');
-      }
+      console.log('✅ 使用 npm 包的 Sharp 模块');
     }
 
     sharp = sharpModule.default || sharpModule;
-    if (isDev) {
-      console.log('✅ Sharp 模块加载成功');
-      console.log('📦 Sharp 版本:', sharp.versions?.sharp || 'unknown');
-    }
+    console.log('✅ Sharp 模块加载成功');
+    console.log('📦 Sharp 版本:', sharp.versions?.sharp || 'unknown');
   } catch (error) {
     sharpError = error;
     console.error('❌ Sharp 模块加载失败:', error.message);
-    if (isDev) {
-      console.error('📋 错误堆栈:', error.stack);
-      console.error('💡 提示: 图片压缩功能将不可用');
-      console.error('💡 解决方案:');
-      console.error('   1. 确保本地 sharp 代码在 src/lib/sharp 目录');
-      console.error('   2. 或确保已安装依赖: pnpm install');
-      console.error('   3. 检查 EdgeOne Pages 是否支持原生模块');
-    }
+    console.error('📋 错误堆栈:', error.stack);
+    console.error('💡 提示: 图片压缩功能将不可用');
+    console.error('💡 解决方案:');
+    console.error('   1. 确保本地 sharp 代码在 src/lib/sharp 目录');
+    console.error('   2. 或确保已安装依赖: pnpm install');
+    console.error('   3. 检查 EdgeOne Pages 是否支持原生模块');
   }
   return { sharp, sharpError };
 }
@@ -89,32 +93,22 @@ function loadSharp() {
 const app = new Koa();
 const router = new Router();
 
-// 请求日志中间件（开发环境）
-if (isDev) {
-  app.use(async (ctx, next) => {
-    const start = Date.now();
-    console.log(`\n📥 [${new Date().toISOString()}] ${ctx.method} ${ctx.path}`);
-    console.log('📋 Query:', ctx.query);
-    console.log('📋 Headers:', {
-      'content-type': ctx.headers['content-type'],
-      'content-length': ctx.headers['content-length']
-    });
-
-    await next();
-
-    const ms = Date.now() - start;
-    console.log(`📤 [${ctx.status}] 响应时间: ${ms}ms`);
-    ctx.set('X-Response-Time', `${ms}ms`);
+// 请求日志中间件
+app.use(async (ctx, next) => {
+  const start = Date.now();
+  console.log(`\n📥 [${new Date().toISOString()}] ${ctx.method} ${ctx.path}`);
+  console.log('📋 Query:', ctx.query);
+  console.log('📋 Headers:', {
+    'content-type': ctx.headers['content-type'],
+    'content-length': ctx.headers['content-length']
   });
-} else {
-  // 生产环境只记录响应时间
-  app.use(async (ctx, next) => {
-    const start = Date.now();
-    await next();
-    const ms = Date.now() - start;
-    ctx.set('X-Response-Time', `${ms}ms`);
-  });
-}
+
+  await next();
+
+  const ms = Date.now() - start;
+  console.log(`📤 [${ctx.status}] 响应时间: ${ms}ms`);
+  ctx.set('X-Response-Time', `${ms}ms`);
+});
 
 // Body parser middleware - 只处理 JSON 请求，跳过文件上传路由
 app.use(async (ctx, next) => {
@@ -137,30 +131,22 @@ app.use(async (ctx, next) => {
     const status = err.status || 500;
     ctx.status = status;
 
-    // 开发环境输出详细错误信息
-    if (isDev) {
-      console.error('\n❌ 错误发生:');
-      console.error('📍 路径:', ctx.method, ctx.path);
-      console.error('📋 错误消息:', err.message);
-      console.error('📋 错误堆栈:', err.stack);
-      console.error('📋 请求体:', ctx.request.body);
-      console.error('📋 Query:', ctx.query);
+    // 输出详细错误信息
+    console.error('\n❌ 错误发生:');
+    console.error('📍 路径:', ctx.method, ctx.path);
+    console.error('📋 错误消息:', err.message);
+    console.error('📋 错误堆栈:', err.stack);
+    console.error('📋 请求体:', ctx.request.body);
+    console.error('📋 Query:', ctx.query);
 
-      ctx.body = {
-        error: err.message || 'Internal Server Error',
-        status: status,
-        stack: err.stack,
-        path: ctx.path,
-        method: ctx.method,
-        timestamp: new Date().toISOString()
-      };
-    } else {
-      // 生产环境只返回基本错误信息
-      ctx.body = {
-        error: err.message || 'Internal Server Error',
-        status: status
-      };
-    }
+    ctx.body = {
+      error: err.message || 'Internal Server Error',
+      status: status,
+      stack: err.stack,
+      path: ctx.path,
+      method: ctx.method,
+      timestamp: new Date().toISOString()
+    };
 
     ctx.app.emit('error', err, ctx);
   }
@@ -168,14 +154,12 @@ app.use(async (ctx, next) => {
 
 // 全局错误监听器
 app.on('error', (err, ctx) => {
-  if (isDev) {
-    console.error('🚨 应用级错误:', err.message);
-    console.error('📍 上下文:', {
-      method: ctx.method,
-      path: ctx.path,
-      status: ctx.status
-    });
-  }
+  console.error('🚨 应用级错误:', err.message);
+  console.error('📍 上下文:', {
+    method: ctx.method,
+    path: ctx.path,
+    status: ctx.status
+  });
 });
 
 // Define routes
@@ -202,16 +186,12 @@ router.get('/', async (ctx) => {
 router.post('/compress', async (ctx) => {
   const { url, base64, quality = 80, width, height, format = 'png' } = ctx.request.body;
 
-  if (isDev) {
-    console.log('🖼️  图片压缩请求参数:', { url: url ? `${url.substring(0, 50)}...` : null, hasBase64: !!base64, quality, width, height, format });
-  }
+  console.log('🖼️  图片压缩请求参数:', { url: url ? `${url.substring(0, 50)}...` : null, hasBase64: !!base64, quality, width, height, format });
 
   if (!url && !base64) {
     ctx.status = 400;
     ctx.body = { error: '请提供 url 或 base64 图片数据' };
-    if (isDev) {
-      console.warn('⚠️  缺少必要参数: url 或 base64');
-    }
+    console.warn('⚠️  缺少必要参数: url 或 base64');
     return;
   }
 
@@ -223,11 +203,9 @@ router.post('/compress', async (ctx) => {
       error: '图片处理服务不可用',
       message: error?.message || 'Sharp 模块未正确加载',
       solution: '请检查 EdgeOne Pages 是否支持原生模块，或联系管理员',
-      ...(isDev && { stack: error?.stack })
+      stack: error?.stack
     };
-    if (isDev) {
-      console.error('❌ Sharp 模块不可用，无法处理图片压缩请求');
-    }
+    console.error('❌ Sharp 模块不可用，无法处理图片压缩请求');
     return;
   }
 
@@ -236,29 +214,21 @@ router.post('/compress', async (ctx) => {
 
     // 从 URL 获取图片
     if (url) {
-      if (isDev) {
-        console.log('🌐 从 URL 获取图片:', url);
-      }
+      console.log('🌐 从 URL 获取图片:', url);
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`无法获取图片: ${response.status} ${response.statusText}`);
       }
       const arrayBuffer = await response.arrayBuffer();
       imageBuffer = Buffer.from(arrayBuffer);
-      if (isDev) {
-        console.log('✅ 图片下载成功，大小:', imageBuffer.length, 'bytes');
-      }
+      console.log('✅ 图片下载成功，大小:', imageBuffer.length, 'bytes');
     }
     // 从 base64 获取图片
     else if (base64) {
-      if (isDev) {
-        console.log('📝 从 base64 解码图片，长度:', base64.length);
-      }
+      console.log('📝 从 base64 解码图片，长度:', base64.length);
       const base64Data = base64.replace(/^data:image\/\w+;base64,/, '');
       imageBuffer = Buffer.from(base64Data, 'base64');
-      if (isDev) {
-        console.log('✅ Base64 解码成功，大小:', imageBuffer.length, 'bytes');
-      }
+      console.log('✅ Base64 解码成功，大小:', imageBuffer.length, 'bytes');
     }
 
     // 使用 sharp 处理图片
@@ -342,11 +312,9 @@ router.post('/compress/upload', async (ctx) => {
       error: '图片处理服务不可用',
       message: error?.message || 'Sharp 模块未正确加载',
       solution: '请检查 EdgeOne Pages 是否支持原生模块，或联系管理员',
-      ...(isDev && { stack: error?.stack })
+      stack: error?.stack
     };
-    if (isDev) {
-      console.error('❌ Sharp 模块不可用，无法处理图片上传压缩请求');
-    }
+    console.error('❌ Sharp 模块不可用，无法处理图片上传压缩请求');
     return;
   }
 
