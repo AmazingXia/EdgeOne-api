@@ -8,6 +8,8 @@ import sharpModule from './lib/sharp/lib/index.js';
 // 直接导入本地 sharp 模块
 const sharp = sharpModule.default || sharpModule;
 
+console.log('sharpModule===>', sharpModule)
+
 console.log('✅ Sharp 模块加载成功');
 console.log('📦 Sharp 版本:', sharp?.versions?.sharp || 'unknown');
 
