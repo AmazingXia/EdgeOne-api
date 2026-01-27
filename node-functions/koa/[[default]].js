@@ -165,16 +165,12 @@ router.get('/', async (ctx) => {
       __filename: __filename || 'unknown'
     };
 
-    // 检查 sharp 状态
-    const sharpStatus = sharp ? '可用' : '不可用';
-
     ctx.body = {
       message: 'Hello from Koa on Node Functions!',
       endpoints: {
         '/compress': 'POST - 压缩图片（支持 URL 或 base64）',
         '/compress/upload': 'POST - 上传并压缩图片（multipart/form-data）'
       },
-      sharp: sharpStatus,
       directory: currentDirInfo,
       tree: directoryTree
     };
