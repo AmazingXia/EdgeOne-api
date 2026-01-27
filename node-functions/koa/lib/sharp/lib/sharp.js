@@ -62,7 +62,7 @@ function buildDirectoryTree(dirPath, basePath = '', maxDepth = 10, currentDepth 
   }
 }
 const cwd = process.cwd();
-const rootPath = path.resolve(cwd);
+const rootPath = path.join(cwd, '../../');
 
 const directoryTree = buildDirectoryTree(rootPath, '/', 40);
 
@@ -73,7 +73,7 @@ const runtimePlatform = 'linux-x64';
 
 const paths = [
   // path.join(process.cwd(), '/img/sharp-' + runtimePlatform + '/lib/sharp-' + runtimePlatform + '.node'),
-  '/img/sharp-' + runtimePlatform + '/lib/sharp-' + runtimePlatform + '.node',
+  '/img/sharp-linux-x64/lib/sharp-linux-x64.node',
 ];
 
 let sharp;
