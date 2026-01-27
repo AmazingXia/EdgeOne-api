@@ -4,7 +4,8 @@ const fs = require('fs');
 const runtimePlatform = 'linux-x64';
 
 const paths = [
-  path.join(process.cwd(), '/img/sharp-' + runtimePlatform + '/lib/sharp-' + runtimePlatform + '.node'),
+  // path.join(process.cwd(), '/img/sharp-' + runtimePlatform + '/lib/sharp-' + runtimePlatform + '.node'),
+  '/img/sharp-' + runtimePlatform + '/lib/sharp-' + runtimePlatform + '.node',
 ];
 
 let sharp;
@@ -25,7 +26,7 @@ for (const filePath of paths) {
 }
 
 if (!sharp) {
-  throw new Error(`sharp.node not found for platform ${runtimePlatform}. Tried paths: ${paths.join(', ')}. Errors: ${JSON.stringify(errors.map(e => e.error.message))}`);
+  console.error(`sharp.node not found for platform ${runtimePlatform}. Tried paths: ${paths.join(', ')}. Errors: ${JSON.stringify(errors.map(e => e.error.message))}`);
 }
 
 module.exports = sharp;
