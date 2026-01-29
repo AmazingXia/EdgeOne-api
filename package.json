@@ -22,6 +22,7 @@
     "lucide-react": "^0.539.0",
     "next": "16.0.10",
     "optional": "^0.1.4",
+    "raw-loader": "^4.0.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "semver": "^7.6.3",
