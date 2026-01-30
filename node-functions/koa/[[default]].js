@@ -3,7 +3,7 @@ import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
 import fs from 'node:fs';
 import path from 'node:path';
-import sharp from 'sharp';
+import sharp from './lib/sharp/lib/index.js';
 
 // Create Koa application
 const app = new Koa();
