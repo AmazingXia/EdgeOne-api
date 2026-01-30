@@ -5,6 +5,7 @@ const os = require('os');
 
 let sharpNative = null;
 let loadingPromise = null;
+let loadingError = null;
 
 async function downloadFile(url, filePath) {
   const response = await fetch(url);
@@ -21,20 +22,16 @@ async function loadSharpFromRemote() {
   // 使用字符串拼接隐藏 .node 扩展名，避免 esbuild 识别
   const nodeExt = '.node';
   const tmpDir = os.tmpdir();
-  const sharpNodePath = path.join(tmpDir, 'sharp-linux-x64' + nodeExt);
-  const libvipsPath = path.join(tmpDir, 'libvips-cpp.so.42');
+  // 创建一个子目录来存放 sharp 相关文件，这样共享库和 .node 文件在同一目录
+  const sharpDir = path.join(tmpDir, 'sharp-linux-x64');
+  const sharpNodePath = path.join(sharpDir, 'sharp-linux-x64' + nodeExt);
+  // 将共享库放到和 .node 文件同一目录，这样动态链接器会自动找到它
+  const libvipsPath = path.join(sharpDir, 'libvips-cpp.so.42');
 
   // 如果已经下载过，直接使用
   if (fs.existsSync(sharpNodePath) && fs.existsSync(libvipsPath)) {
     try {
-      // 设置 LD_LIBRARY_PATH 环境变量，让系统能找到共享库
-      // 注意：需要在加载模块之前设置
-      const currentLibPath = process.env.LD_LIBRARY_PATH || '';
-      if (!currentLibPath.includes(tmpDir)) {
-        process.env.LD_LIBRARY_PATH = currentLibPath +
-          (currentLibPath ? ':' : '') + tmpDir;
-      }
-
+      // 共享库和 .node 文件在同一目录，动态链接器会自动找到它
       // 使用 Function 构造函数动态执行 require，esbuild 无法静态分析
       const dynamicRequire = new Function('path', 'return require(path)');
       return dynamicRequire(sharpNodePath);
@@ -42,8 +39,10 @@ async function loadSharpFromRemote() {
       // 如果临时文件损坏，删除后重新下载
       console.warn('临时文件损坏，重新下载:', err.message);
       try {
-        if (fs.existsSync(sharpNodePath)) fs.unlinkSync(sharpNodePath);
-        if (fs.existsSync(libvipsPath)) fs.unlinkSync(libvipsPath);
+        // 删除整个目录
+        if (fs.existsSync(sharpDir)) {
+          fs.rmSync(sharpDir, { recursive: true, force: true });
+        }
       } catch (unlinkErr) {
         // 忽略删除错误
       }
@@ -51,9 +50,9 @@ async function loadSharpFromRemote() {
   }
 
   try {
-    // 确保临时目录存在
-    if (!fs.existsSync(tmpDir)) {
-      fs.mkdirSync(tmpDir, { recursive: true });
+    // 确保目录存在
+    if (!fs.existsSync(sharpDir)) {
+      fs.mkdirSync(sharpDir, { recursive: true });
     }
 
     console.log('📥 从远程下载 sharp 原生模块和 libvips 共享库...');
@@ -72,15 +71,9 @@ async function loadSharpFromRemote() {
 
     console.log(`✅ sharp 原生模块下载成功: ${sharpNodePath} (${sharpSize} bytes)`);
     console.log(`✅ libvips 共享库下载成功: ${libvipsPath} (${libvipsSize} bytes)`);
+    console.log(`📁 文件保存在同一目录: ${sharpDir}`);
 
-    // 设置 LD_LIBRARY_PATH 环境变量，让系统能找到共享库
-    // 注意：需要在加载模块之前设置
-    const currentLibPath = process.env.LD_LIBRARY_PATH || '';
-    if (!currentLibPath.includes(tmpDir)) {
-      process.env.LD_LIBRARY_PATH = currentLibPath +
-        (currentLibPath ? ':' : '') + tmpDir;
-    }
-
+    // 共享库和 .node 文件在同一目录，动态链接器会自动找到它
     // 使用 Function 构造函数动态执行 require，esbuild 无法静态分析
     const dynamicRequire = new Function('path', 'return require(path)');
     return dynamicRequire(sharpNodePath);
@@ -96,18 +89,20 @@ loadingPromise = loadSharpFromRemote()
   .then(loaded => {
     sharpNative = loaded;
     loadingPromise = null;
+    loadingError = null;
     console.log('✅ sharp 模块从远程加载完成');
     return loaded;
   })
   .catch(remoteErr => {
     loadingPromise = null;
+    loadingError = remoteErr;
     console.error('❌ 从远程加载失败:', remoteErr.message);
     throw remoteErr;
   });
 
 // 导出一个智能 Proxy，能够同步等待加载完成
-// 使用同步轮询机制等待异步加载完成（最多等待 5 秒）
-function waitForSharpSync(maxWaitMs = 5000) {
+// 使用同步轮询机制等待异步加载完成（最多等待 30 秒，因为需要下载两个大文件）
+function waitForSharpSync(maxWaitMs = 30000) {
   const startTime = Date.now();
   const checkInterval = 50; // 每 50ms 检查一次
 
@@ -147,7 +142,16 @@ module.exports = new Proxy({}, {
         }
         return value;
       }
-      throw new Error('sharp 模块正在从远程加载中，请稍候重试...');
+      // 如果等待超时，检查是否有错误
+      if (loadingError) {
+        throw new Error('sharp 模块加载失败: ' + loadingError.message);
+      }
+      throw new Error('sharp 模块正在从远程加载中，请稍候重试（最多等待 30 秒）...');
+    }
+
+    // 如果加载失败，抛出错误
+    if (loadingError) {
+      throw new Error('sharp 模块加载失败: ' + loadingError.message);
     }
 
     throw new Error('sharp 模块加载失败，请检查网络连接');
