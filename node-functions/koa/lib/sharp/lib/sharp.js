@@ -6,22 +6,44 @@ const os = require('os');
 let sharpNative = null;
 let loadingPromise = null;
 
+async function downloadFile(url, filePath) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`下载失败: ${response.status} ${response.statusText}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  fs.writeFileSync(filePath, buffer, { mode: 0o755 });
+  return buffer.length;
+}
+
 async function loadSharpFromRemote() {
   // 使用字符串拼接隐藏 .node 扩展名，避免 esbuild 识别
   const nodeExt = '.node';
-  const tmpPath = path.join(os.tmpdir(), 'sharp-linux-x64' + nodeExt);
+  const tmpDir = os.tmpdir();
+  const sharpNodePath = path.join(tmpDir, 'sharp-linux-x64' + nodeExt);
+  const libvipsPath = path.join(tmpDir, 'libvips-cpp.so.42');
 
   // 如果已经下载过，直接使用
-  if (fs.existsSync(tmpPath)) {
+  if (fs.existsSync(sharpNodePath) && fs.existsSync(libvipsPath)) {
     try {
+      // 设置 LD_LIBRARY_PATH 环境变量，让系统能找到共享库
+      // 注意：需要在加载模块之前设置
+      const currentLibPath = process.env.LD_LIBRARY_PATH || '';
+      if (!currentLibPath.includes(tmpDir)) {
+        process.env.LD_LIBRARY_PATH = currentLibPath +
+          (currentLibPath ? ':' : '') + tmpDir;
+      }
+
       // 使用 Function 构造函数动态执行 require，esbuild 无法静态分析
       const dynamicRequire = new Function('path', 'return require(path)');
-      return dynamicRequire(tmpPath);
+      return dynamicRequire(sharpNodePath);
     } catch (err) {
       // 如果临时文件损坏，删除后重新下载
       console.warn('临时文件损坏，重新下载:', err.message);
       try {
-        fs.unlinkSync(tmpPath);
+        if (fs.existsSync(sharpNodePath)) fs.unlinkSync(sharpNodePath);
+        if (fs.existsSync(libvipsPath)) fs.unlinkSync(libvipsPath);
       } catch (unlinkErr) {
         // 忽略删除错误
       }
@@ -29,31 +51,39 @@ async function loadSharpFromRemote() {
   }
 
   try {
-    console.log('📥 从远程下载 sharp 原生模块: https://koa.niumengke.top/img/sharp-linux-x64/lib/sharp-linux-x64.node');
-    const remoteUrl = 'https://koa.niumengke.top/img/sharp-linux-x64/lib/sharp-linux-x64' + nodeExt;
-    const response = await fetch(remoteUrl);
-
-    if (!response.ok) {
-      throw new Error(`下载失败: ${response.status} ${response.statusText}`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
     // 确保临时目录存在
-    const tmpDir = os.tmpdir();
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
     }
 
-    // 保存到临时目录
-    fs.writeFileSync(tmpPath, buffer, { mode: 0o755 }); // 设置可执行权限
+    console.log('📥 从远程下载 sharp 原生模块和 libvips 共享库...');
 
-    console.log('✅ sharp 原生模块下载成功:', tmpPath);
+    // 同时下载 sharp .node 文件和 libvips 共享库
+    const [sharpSize, libvipsSize] = await Promise.all([
+      downloadFile(
+        'https://koa.niumengke.top/img/sharp-linux-x64.node',
+        sharpNodePath
+      ),
+      downloadFile(
+        'https://koa.niumengke.top/img/libvips-cpp.so.42',
+        libvipsPath
+      )
+    ]);
+
+    console.log(`✅ sharp 原生模块下载成功: ${sharpNodePath} (${sharpSize} bytes)`);
+    console.log(`✅ libvips 共享库下载成功: ${libvipsPath} (${libvipsSize} bytes)`);
+
+    // 设置 LD_LIBRARY_PATH 环境变量，让系统能找到共享库
+    // 注意：需要在加载模块之前设置
+    const currentLibPath = process.env.LD_LIBRARY_PATH || '';
+    if (!currentLibPath.includes(tmpDir)) {
+      process.env.LD_LIBRARY_PATH = currentLibPath +
+        (currentLibPath ? ':' : '') + tmpDir;
+    }
 
     // 使用 Function 构造函数动态执行 require，esbuild 无法静态分析
     const dynamicRequire = new Function('path', 'return require(path)');
-    return dynamicRequire(tmpPath);
+    return dynamicRequire(sharpNodePath);
   } catch (error) {
     throw new Error('从远程加载 sharp 原生模块失败: ' + error.message);
   }
@@ -76,8 +106,8 @@ loadingPromise = loadSharpFromRemote()
   });
 
 // 导出一个智能 Proxy，能够同步等待加载完成
-// 使用同步轮询机制等待异步加载完成（最多等待 10 秒）
-function waitForSharpSync(maxWaitMs = 10000) {
+// 使用同步轮询机制等待异步加载完成（最多等待 5 秒）
+function waitForSharpSync(maxWaitMs = 5000) {
   const startTime = Date.now();
   const checkInterval = 50; // 每 50ms 检查一次
 
