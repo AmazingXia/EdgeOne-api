@@ -3,7 +3,17 @@ import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
 import fs from 'node:fs';
 import path from 'node:path';
-import sharp from './lib/sharp/lib/index.js';
+
+// 使用动态导入避免 esbuild 打包 sharp 的原生模块
+let sharp;
+async function getSharp() {
+  if (!sharp) {
+    const sharpModule = await import('./lib/sharp/lib/index.js');
+    // CommonJS 模块导出，可能需要使用 default 或直接使用模块
+    sharp = sharpModule.default || sharpModule;
+  }
+  return sharp;
+}
 
 // Create Koa application
 const app = new Koa();
@@ -216,7 +226,8 @@ router.post('/compress', async (ctx) => {
     }
 
     // 使用 sharp 处理图片
-    let sharpInstance = sharp(imageBuffer);
+    const sharpModule = await getSharp();
+    let sharpInstance = sharpModule(imageBuffer);
 
     // 调整尺寸
     if (width || height) {
@@ -257,8 +268,8 @@ router.post('/compress', async (ctx) => {
     }
 
     // 获取原始和压缩后的信息
-    const originalInfo = await sharp(imageBuffer).metadata();
-    const compressedInfo = await sharp(outputBuffer).metadata();
+    const originalInfo = await sharpModule(imageBuffer).metadata();
+    const compressedInfo = await sharpModule(outputBuffer).metadata();
     const originalSize = imageBuffer.length;
     const compressedSize = outputBuffer.length;
     const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(2);
@@ -288,8 +299,6 @@ router.post('/compress', async (ctx) => {
  * Query 参数: quality, width, height, format
  */
 router.post('/compress/upload', async (ctx) => {
-  // sharp 已通过静态导入加载，直接使用
-
   try {
     // 从 query 参数获取压缩选项
     const quality = ctx.query.quality || ctx.request.body?.quality || 80;
@@ -347,7 +356,8 @@ router.post('/compress/upload', async (ctx) => {
     }
 
     // 使用 sharp 处理图片
-    let sharpInstance = sharp(imageBuffer);
+    const sharpModule = await getSharp();
+    let sharpInstance = sharpModule(imageBuffer);
 
     // 调整尺寸
     if (width || height) {
@@ -388,8 +398,8 @@ router.post('/compress/upload', async (ctx) => {
     }
 
     // 获取原始和压缩后的信息
-    const originalInfo = await sharp(imageBuffer).metadata();
-    const compressedInfo = await sharp(outputBuffer).metadata();
+    const originalInfo = await sharpModule(imageBuffer).metadata();
+    const compressedInfo = await sharpModule(outputBuffer).metadata();
     const originalSize = imageBuffer.length;
     const compressedSize = outputBuffer.length;
     const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(2);
