@@ -13,6 +13,7 @@
     "@koa/multer": "^4.0.0",
     "@koa/router": "^14.0.0",
     "@radix-ui/react-slot": "^1.2.3",
+    "axios": "^1.13.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "color": "^4.2.3",
@@ -26,7 +27,6 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "semver": "^7.6.3",
-    "sharp": "^0.33.5",
     "tailwind-merge": "^3.3.1"
   },
   "devDependencies": {
