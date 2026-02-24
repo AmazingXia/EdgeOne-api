@@ -1,10 +1,12 @@
 import Koa from 'koa';
 import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
+import { WebSocketServer } from 'ws';
 import { curlProxy } from './curlProxy.js';
 import { proxy } from './proxy.js';
+import { handleTunnel } from './tunnel.js';
+import { handleHttpStream } from './httpStream.js';
 
-// Create Koa application
 const app = new Koa();
 const router = new Router();
 
@@ -43,8 +45,6 @@ app.use(async (ctx, next) => {
   ctx.set('X-Response-Time', `${ms}ms`);
 });
 
-
-
 // Error handling middleware - 增强错误处理和调试信息
 app.use(async (ctx, next) => {
   try {
@@ -53,7 +53,6 @@ app.use(async (ctx, next) => {
     const status = err.status || 500;
     ctx.status = status;
 
-    // 输出详细错误信息
     console.error('\n❌ 错误发生:');
     console.error('📍 路径:', ctx.method, ctx.path);
     console.error('📋 错误消息:', err.message);
@@ -74,7 +73,6 @@ app.use(async (ctx, next) => {
   }
 });
 
-// 全局错误监听器
 app.on('error', (err, ctx) => {
   console.error('🚨 应用级错误:', err.message);
   console.error('📍 上下文:', {
@@ -86,13 +84,47 @@ app.on('error', (err, ctx) => {
 
 // 路由：POST /curl — 解析前端传来的 curl 字符串并代为请求，返回结果
 router.post('/curl', curlProxy);
-
 // 路由：/proxy — 根据 body 的 url/method/headers/data 代为请求
 router.post('/proxy', proxy);
+// 代理诊断（与 proxy-local 配合时可用）
+router.get('/vpn/test', (ctx) => {
+  const host = ctx.query.host || 'github.com';
+  const port = parseInt(ctx.query.port || '443', 10);
+  ctx.body = { host, port, message: 'Use WebSocket /vpn/tunnel for proxy. GET /vpn/test is OK.' };
+});
 
-// Use router middleware
-app.use(router.routes());
-app.use(router.allowedMethods());
+app.use(router.routes()).use(router.allowedMethods());
 
-// Export handler
-export default app;
+const koaCallback = app.callback();
+
+// WebSocket 代理：/vpn/tunnel（TCP 隧道）、/vpn/http-stream（流式 HTTP）
+const wss = new WebSocketServer({ noServer: true });
+wss.on('connection', (ws, req) => {
+  const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+  const searchParams = new URL(req.url || '/', 'http://localhost').searchParams;
+
+  if (pathname.endsWith('/tunnel')) {
+    handleTunnel(ws, searchParams);
+  } else if (pathname.endsWith('/http-stream')) {
+    handleHttpStream(ws);
+  } else {
+    ws.close(4000, 'Unknown path');
+  }
+});
+
+/**
+ * 统一入口：优先处理 WebSocket Upgrade，否则走 Koa
+ * EdgeOne 以 (req, res) 调用 default 时，Upgrade 请求走代理隧道，其余走 Koa 路由
+ */
+function handler(req, res) {
+  if (req.headers.upgrade === 'websocket') {
+    const head = Buffer.alloc(0);
+    wss.handleUpgrade(req, req.socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+    return;
+  }
+  koaCallback(req, res);
+}
+
+export default handler;
