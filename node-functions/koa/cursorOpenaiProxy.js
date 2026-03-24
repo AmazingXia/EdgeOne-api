@@ -555,9 +555,6 @@ function convertChatCompletionsRequestToResponses(payload) {
   if (Array.isArray(payload.include)) {
     converted.include = payload.include;
   }
-  if (payload.metadata && typeof payload.metadata === "object") {
-    converted.metadata = payload.metadata;
-  }
   if (payload.prompt_cache_retention !== undefined) {
     converted.prompt_cache_retention = payload.prompt_cache_retention;
   }
@@ -604,6 +601,9 @@ function convertChatCompletionsRequestToResponses(payload) {
   }
   if (payload.stream_options !== undefined) {
     droppedFields.push("stream_options");
+  }
+  if (payload.metadata !== undefined) {
+    droppedFields.push("metadata");
   }
   if (PROXY_CONFIG.verbose) {
     log("bridge-request-shape", {
