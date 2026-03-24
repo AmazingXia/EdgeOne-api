@@ -2,6 +2,7 @@ import Koa from 'koa';
 import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
 import { curlProxy } from './curlProxy.js';
+import { cursorOpenaiProxy, cursorOpenaiProxyHealth } from './cursorOpenaiProxy.js';
 import { proxy } from './proxy.js';
 
 // Create Koa application
@@ -15,7 +16,7 @@ app.use(bodyParser());
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 app.use(async (ctx, next) => {
   ctx.set(corsHeaders);
@@ -89,6 +90,10 @@ router.post('/curl', curlProxy);
 
 // 路由：/proxy — 根据 body 的 url/method/headers/data 代为请求
 router.post('/proxy', proxy);
+
+// 路由：EdgeOne 上的 OpenAI 兼容代理
+router.get('/__openai_proxy/health', cursorOpenaiProxyHealth);
+router.all(/^\/v1(?:\/.*)?$/, cursorOpenaiProxy);
 
 // Use router middleware
 app.use(router.routes());
