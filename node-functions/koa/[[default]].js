@@ -2,7 +2,7 @@ import Koa from 'koa';
 import Router from '@koa/router';
 import bodyParser from 'koa-bodyparser';
 import { curlProxy } from './curlProxy.js';
-import { cursorOpenaiProxy, cursorOpenaiProxyHealth } from './cursorOpenaiProxy.js';
+import { cursorOpenaiProxy } from './cursorOpenaiProxy.js';
 import { proxy } from './proxy.js';
 
 // Create Koa application
@@ -92,7 +92,6 @@ router.post('/curl', curlProxy);
 router.post('/proxy', proxy);
 
 // 路由：EdgeOne 上的 OpenAI 兼容代理
-router.get('/__openai_proxy/health', cursorOpenaiProxyHealth);
 router.all(/^\/v1(?:\/.*)?$/, cursorOpenaiProxy);
 
 // Use router middleware
