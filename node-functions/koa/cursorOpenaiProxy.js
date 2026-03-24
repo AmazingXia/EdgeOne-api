@@ -552,10 +552,6 @@ function convertChatCompletionsRequestToResponses(payload) {
     stream: payload.stream === true,
     store: typeof payload.store === "boolean" ? payload.store : false,
   };
-
-  if (typeof payload.user === "string") {
-    converted.user = payload.user;
-  }
   if (Array.isArray(payload.include)) {
     converted.include = payload.include;
   }
@@ -564,9 +560,6 @@ function convertChatCompletionsRequestToResponses(payload) {
   }
   if (payload.prompt_cache_retention !== undefined) {
     converted.prompt_cache_retention = payload.prompt_cache_retention;
-  }
-  if (payload.stream_options && typeof payload.stream_options === "object") {
-    converted.stream_options = payload.stream_options;
   }
 
   if (rewrite.reasoningEffort) {
@@ -605,6 +598,13 @@ function convertChatCompletionsRequestToResponses(payload) {
   }
 
   const convertedInputSummary = summarizeResponsesInput(converted.input);
+  const droppedFields = [];
+  if (payload.user !== undefined) {
+    droppedFields.push("user");
+  }
+  if (payload.stream_options !== undefined) {
+    droppedFields.push("stream_options");
+  }
   if (PROXY_CONFIG.verbose) {
     log("bridge-request-shape", {
       source: {
@@ -623,6 +623,7 @@ function convertChatCompletionsRequestToResponses(payload) {
         inputSummary: convertedInputSummary,
         toolSummary: summarizeToolDefinitions(converted.tools),
         topLevelKeys: Object.keys(converted),
+        droppedFields,
       },
     });
   }
