@@ -225,6 +225,24 @@ function summarizeChatMessages(messages) {
 }
 
 function summarizeResponsesInput(input) {
+  if (typeof input === "string") {
+    return {
+      count: 1,
+      kinds: { string: 1 },
+      roles: {},
+      previews: [
+        {
+          index: 0,
+          kind: "string",
+          role: null,
+          call_id: null,
+          name: null,
+          preview: previewText(input, 120),
+        },
+      ],
+    };
+  }
+
   const items = asArray(input);
   const kinds = {};
   const roles = {};
@@ -274,6 +292,35 @@ function summarizeResponsesInput(input) {
     roles,
     previews,
   };
+}
+
+function normalizeIncomingResponsesInput(input) {
+  if (typeof input === "string") {
+    return input;
+  }
+
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  return input.map((item) => {
+    if (!item || typeof item !== "object") {
+      return item;
+    }
+
+    if (typeof item.type === "string") {
+      return item;
+    }
+
+    if (typeof item.role === "string") {
+      return {
+        role: item.role,
+        content: normalizeChatMessageContent(item.role, item.content),
+      };
+    }
+
+    return item;
+  });
 }
 
 function summarizeToolDefinitions(tools) {
@@ -493,13 +540,34 @@ function convertChatToolChoice(toolChoice) {
 
 function convertChatCompletionsRequestToResponses(payload) {
   const rewrite = buildFixedModelRewrite(payload.model);
+  const hasResponsesStyleInput = payload.input !== undefined;
   const originalMessageSummary = summarizeChatMessages(payload.messages);
+  const originalInputSummary = summarizeResponsesInput(payload.input);
+  const normalizedInput = hasResponsesStyleInput
+    ? normalizeIncomingResponsesInput(payload.input)
+    : convertChatMessagesToResponsesInput(payload.messages);
   const converted = {
     model: rewrite.upstreamModel,
-    input: convertChatMessagesToResponsesInput(payload.messages),
+    input: normalizedInput,
     stream: payload.stream === true,
-    store: false,
+    store: typeof payload.store === "boolean" ? payload.store : false,
   };
+
+  if (typeof payload.user === "string") {
+    converted.user = payload.user;
+  }
+  if (Array.isArray(payload.include)) {
+    converted.include = payload.include;
+  }
+  if (payload.metadata && typeof payload.metadata === "object") {
+    converted.metadata = payload.metadata;
+  }
+  if (payload.prompt_cache_retention !== undefined) {
+    converted.prompt_cache_retention = payload.prompt_cache_retention;
+  }
+  if (payload.stream_options && typeof payload.stream_options === "object") {
+    converted.stream_options = payload.stream_options;
+  }
 
   if (rewrite.reasoningEffort) {
     converted.reasoning = {
@@ -542,7 +610,9 @@ function convertChatCompletionsRequestToResponses(payload) {
       source: {
         model: payload.model,
         stream: payload.stream === true,
+        inputMode: hasResponsesStyleInput ? "input" : "messages",
         messageSummary: originalMessageSummary,
+        inputSummary: originalInputSummary,
         toolSummary: summarizeToolDefinitions(payload.tools ?? payload.functions),
         topLevelKeys: Object.keys(payload),
       },
@@ -560,7 +630,9 @@ function convertChatCompletionsRequestToResponses(payload) {
   if (convertedInputSummary.count === 0) {
     log("bridge-empty-input-warning", {
       model: payload.model,
+      inputMode: hasResponsesStyleInput ? "input" : "messages",
       originalMessageSummary,
+      originalInputSummary,
       topLevelKeys: Object.keys(payload),
     });
   }
