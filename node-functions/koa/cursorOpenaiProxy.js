@@ -149,6 +149,162 @@ function summarizePayload(pathname, payload) {
   return summary.join(" ");
 }
 
+function summarizeChatMessages(messages) {
+  const items = asArray(messages);
+  const roles = {};
+  const contentKinds = {};
+  const previews = [];
+  let toolCalls = 0;
+
+  for (const [index, message] of items.entries()) {
+    const role = typeof message?.role === "string" ? message.role : "(missing)";
+    roles[role] = (roles[role] ?? 0) + 1;
+    toolCalls += asArray(message?.tool_calls).length;
+
+    const content = message?.content;
+    if (typeof content === "string") {
+      contentKinds.string = (contentKinds.string ?? 0) + 1;
+      if (previews.length < 3) {
+        previews.push({
+          index,
+          role,
+          kind: "string",
+          chars: content.length,
+          preview: previewText(content, 120),
+        });
+      }
+      continue;
+    }
+
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        const kind = typeof part?.type === "string" ? part.type : typeof part;
+        contentKinds[kind] = (contentKinds[kind] ?? 0) + 1;
+      }
+      if (previews.length < 3) {
+        previews.push({
+          index,
+          role,
+          kind: "array",
+          parts: content.length,
+          preview: previewText(
+            content
+              .map((part) => {
+                if (typeof part === "string") return part;
+                if (typeof part?.text === "string") return part.text;
+                if (typeof part?.refusal === "string") return part.refusal;
+                return safeJsonStringify(part);
+              })
+              .join(" "),
+            120,
+          ),
+        });
+      }
+      continue;
+    }
+
+    const kind = content == null ? "nullish" : typeof content;
+    contentKinds[kind] = (contentKinds[kind] ?? 0) + 1;
+    if (previews.length < 3) {
+      previews.push({
+        index,
+        role,
+        kind,
+        preview: previewText(safeJsonStringify(content, String(content)), 120),
+      });
+    }
+  }
+
+  return {
+    count: items.length,
+    roles,
+    contentKinds,
+    toolCalls,
+    previews,
+  };
+}
+
+function summarizeResponsesInput(input) {
+  const items = asArray(input);
+  const kinds = {};
+  const roles = {};
+  const previews = [];
+
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item !== "object") {
+      const kind = typeof item;
+      kinds[kind] = (kinds[kind] ?? 0) + 1;
+      continue;
+    }
+
+    const kind = typeof item.type === "string" ? item.type : "message";
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+
+    if (typeof item.role === "string") {
+      roles[item.role] = (roles[item.role] ?? 0) + 1;
+    }
+
+    if (previews.length < 5) {
+      const preview =
+        typeof item.output === "string"
+          ? item.output
+          : asArray(item.content)
+              .map((part) => {
+                if (typeof part?.text === "string") return part.text;
+                if (typeof part?.output_text === "string") return part.output_text;
+                if (typeof part?.image_url === "string") return "[image]";
+                return "";
+              })
+              .filter(Boolean)
+              .join(" ");
+      previews.push({
+        index,
+        kind,
+        role: item.role ?? null,
+        call_id: item.call_id ?? null,
+        name: item.name ?? null,
+        preview: previewText(preview, 120),
+      });
+    }
+  }
+
+  return {
+    count: items.length,
+    kinds,
+    roles,
+    previews,
+  };
+}
+
+function summarizeToolDefinitions(tools) {
+  const items = asArray(tools);
+  return {
+    count: items.length,
+    names: items
+      .slice(0, 12)
+      .map((tool) => tool?.name ?? tool?.function?.name ?? tool?.type ?? "(unknown)"),
+  };
+}
+
+function pickInterestingHeaders(headers) {
+  const interesting = {};
+  for (const name of [
+    "x-request-id",
+    "request-id",
+    "cf-ray",
+    "server",
+    "retry-after",
+    "openai-processing-ms",
+    "x-cursor-proxy-upstream-status",
+  ]) {
+    const value = headers.get(name);
+    if (value) {
+      interesting[name] = value;
+    }
+  }
+  return interesting;
+}
+
 function normalizeTextPart(role, text) {
   const normalizedText = typeof text === "string" ? text : String(text ?? "");
   return role === "assistant"
@@ -337,6 +493,7 @@ function convertChatToolChoice(toolChoice) {
 
 function convertChatCompletionsRequestToResponses(payload) {
   const rewrite = buildFixedModelRewrite(payload.model);
+  const originalMessageSummary = summarizeChatMessages(payload.messages);
   const converted = {
     model: rewrite.upstreamModel,
     input: convertChatMessagesToResponsesInput(payload.messages),
@@ -377,6 +534,35 @@ function convertChatCompletionsRequestToResponses(payload) {
   }
   if (typeof payload.parallel_tool_calls === "boolean") {
     converted.parallel_tool_calls = payload.parallel_tool_calls;
+  }
+
+  const convertedInputSummary = summarizeResponsesInput(converted.input);
+  if (PROXY_CONFIG.verbose) {
+    log("bridge-request-shape", {
+      source: {
+        model: payload.model,
+        stream: payload.stream === true,
+        messageSummary: originalMessageSummary,
+        toolSummary: summarizeToolDefinitions(payload.tools ?? payload.functions),
+        topLevelKeys: Object.keys(payload),
+      },
+      converted: {
+        model: converted.model,
+        stream: converted.stream === true,
+        reasoning: converted.reasoning?.effort ?? null,
+        inputSummary: convertedInputSummary,
+        toolSummary: summarizeToolDefinitions(converted.tools),
+        topLevelKeys: Object.keys(converted),
+      },
+    });
+  }
+
+  if (convertedInputSummary.count === 0) {
+    log("bridge-empty-input-warning", {
+      model: payload.model,
+      originalMessageSummary,
+      topLevelKeys: Object.keys(payload),
+    });
   }
 
   return {
@@ -1122,6 +1308,7 @@ export async function cursorOpenaiProxy(ctx) {
       pathname,
       status: upstreamResponse.status,
       statusText: upstreamResponse.statusText,
+      responseHeaders: pickInterestingHeaders(upstreamResponse.headers),
       bodyPreview: previewText(rawText),
     });
     ctx.body = rawText;
