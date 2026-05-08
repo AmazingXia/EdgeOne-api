@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 type HolidayMap = Record<string, string>;
 
@@ -91,7 +98,7 @@ type MannKendallResult = {
   pValue: number;
 };
 
-const PROXY_ENDPOINT = "/koa/proxy";
+const PROXY_ENDPOINT = "https://api.niumengke.top/koa/proxy";
 const MAX_HISTORY_COUNT = 5;
 
 const HIDDEN_COLUMNS: Record<string, boolean> = {
@@ -946,6 +953,7 @@ export default function Home() {
   const [parseError, setParseError] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [showQuerySuggestionMenu, setShowQuerySuggestionMenu] = useState(false);
+  const [querySuggestionActiveIndex, setQuerySuggestionActiveIndex] = useState(0);
   const [showStockOptionMenu, setShowStockOptionMenu] = useState(false);
   const [stockTableSort, setStockTableSort] = useState<StockTableSort | null>(null);
   const [resultDates, setResultDates] = useState<string[]>([]);
@@ -955,9 +963,18 @@ export default function Home() {
   const queryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const queryConditionRef = useRef(queryCondition);
   const stockSearchKeywordRef = useRef(stockSearchKeyword);
+  // 跟踪查询输入框的 IME（拼音/汉字）合成状态，避免拼音过程中每个字母都打到远程接口。
+  const isQueryComposingRef = useRef(false);
 
-  const visibleDateList = getVisibleDateList(dateList, onlyTradingDay);
-  const hasGroupedHeader = tableColumns.some((column) => (column.children?.length || 0) > 0);
+  // 这些派生量只跟少量 state 有关，使用 useMemo 缓存，避免每次按键都重算（删字卡顿的主因）。
+  const visibleDateList = useMemo(
+    () => getVisibleDateList(dateList, onlyTradingDay),
+    [dateList, onlyTradingDay],
+  );
+  const hasGroupedHeader = useMemo(
+    () => tableColumns.some((column) => (column.children?.length || 0) > 0),
+    [tableColumns],
+  );
 
   queryConditionRef.current = queryCondition;
   stockSearchKeywordRef.current = stockSearchKeyword;
@@ -1060,39 +1077,53 @@ export default function Home() {
     };
   }, [feedback]);
 
-  let compiledFeature: ((guba: GubaMap) => boolean) | null = null;
-  if (feature) {
+  // 把"特征字符串编译为函数"缓存到 feature 变化时，避免每次按键都 new Function 一次。
+  const compiledFeature = useMemo<((guba: GubaMap) => boolean) | null>(() => {
+    if (!feature) {
+      return null;
+    }
+
     try {
-      compiledFeature = new Function(`return ${feature}`)() as (guba: GubaMap) => boolean;
+      return new Function(`return ${feature}`)() as (guba: GubaMap) => boolean;
     } catch (error) {
       console.error("解析特征函数失败:", error);
+      return null;
     }
-  }
+  }, [feature]);
 
-  const filteredTableData = tableData.filter((item) => {
-    if (trend && !item.trend.includes(trend)) {
-      return false;
-    }
-
-    if (compiledFeature) {
-      try {
-        return compiledFeature(item.guba);
-      } catch (error) {
-        console.error("执行特征函数失败:", error);
+  // 帖子表格的过滤结果只与 tableData / trend / compiledFeature 有关，缓存避免输入触发重算。
+  const filteredTableData = useMemo(() => {
+    return tableData.filter((item) => {
+      if (trend && !item.trend.includes(trend)) {
         return false;
       }
+
+      if (compiledFeature) {
+        try {
+          return compiledFeature(item.guba);
+        } catch (error) {
+          console.error("执行特征函数失败:", error);
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [tableData, trend, compiledFeature]);
+
+  // 股票表的排序拷贝代价较高（可能上千条），缓存到排序/数据真实变化时。
+  const visibleStockList = useMemo(() => {
+    if (!stockTableSort) {
+      return stockList;
     }
 
-    return true;
-  });
-
-  const visibleStockList = [...stockList];
-  if (stockTableSort) {
-    visibleStockList.sort((left, right) => {
+    const next = [...stockList];
+    next.sort((left, right) => {
       const result = compareValues(left[stockTableSort.key], right[stockTableSort.key]);
       return stockTableSort.direction === "asc" ? result : -result;
     });
-  }
+    return next;
+  }, [stockList, stockTableSort]);
 
   function pushFeedback(text: string, type: Feedback["type"] = "info") {
     setFeedback({
@@ -1229,22 +1260,49 @@ export default function Home() {
   }
 
 
-  function handleQueryInput(value: string) {
-    setQueryCondition(value);
-
+  // 调度一次远程查询建议请求，统一 debounce + 空值清空逻辑。
+  function scheduleQuerySuggestion(value: string) {
     if (queryInputTimerRef.current) {
       window.clearTimeout(queryInputTimerRef.current);
     }
 
     if (!value.trim()) {
       setQuerySuggestions([]);
+      setQuerySuggestionActiveIndex(0);
       setShowQuerySuggestionMenu(false);
       return;
     }
 
     queryInputTimerRef.current = window.setTimeout(() => {
       void fetchQuerySuggestions(value);
-    }, 300);
+    }, 500);
+  }
+
+
+  function handleQueryInput(value: string) {
+    // ① 任何时候都先把输入值同步到 state，保证 UI 展示与原生 textarea 一致。
+    setQueryCondition(value);
+
+    // ② 处于拼音合成中（IME composing）时只更新值，不触发远程，等 compositionEnd 后再请求。
+    if (isQueryComposingRef.current) {
+      return;
+    }
+
+    scheduleQuerySuggestion(value);
+  }
+
+
+  function handleQueryCompositionStart() {
+    isQueryComposingRef.current = true;
+  }
+
+
+  function handleQueryCompositionEnd(
+    event: React.CompositionEvent<HTMLTextAreaElement>,
+  ) {
+    isQueryComposingRef.current = false;
+    // 取最终落字后的完整文本调度一次远程；debounce 会自动覆盖紧随其后的同值 onChange，避免重复请求。
+    scheduleQuerySuggestion(event.currentTarget.value);
   }
 
 
@@ -1277,18 +1335,29 @@ export default function Home() {
         return;
       }
 
+      // 建议菜单的更新标记为非紧急（transition），让用户击键引起的输入框/光标更新优先渲染，避免删字时卡顿。
       if (response?.code === "00000" && response.data?.matchQuery) {
-        setQuerySuggestions(response.data.matchQuery);
-        setShowQuerySuggestionMenu(response.data.matchQuery.length > 0);
+        const matchQuery = response.data.matchQuery;
+        startTransition(() => {
+          setQuerySuggestions(matchQuery);
+          setQuerySuggestionActiveIndex(0);
+          setShowQuerySuggestionMenu(matchQuery.length > 0);
+        });
         return;
       }
 
-      setQuerySuggestions([]);
-      setShowQuerySuggestionMenu(false);
+      startTransition(() => {
+        setQuerySuggestions([]);
+        setQuerySuggestionActiveIndex(0);
+        setShowQuerySuggestionMenu(false);
+      });
     } catch (error) {
       console.error("获取查询建议失败:", error);
-      setQuerySuggestions([]);
-      setShowQuerySuggestionMenu(false);
+      startTransition(() => {
+        setQuerySuggestions([]);
+        setQuerySuggestionActiveIndex(0);
+        setShowQuerySuggestionMenu(false);
+      });
     }
   }
 
@@ -1306,6 +1375,7 @@ export default function Home() {
 
     setQueryCondition(nextText);
     setQuerySuggestions([]);
+    setQuerySuggestionActiveIndex(0);
     setShowQuerySuggestionMenu(false);
 
     window.setTimeout(() => {
@@ -1564,26 +1634,26 @@ export default function Home() {
     setResultDates(nextDates);
 
     try {
-      const rows: Array<ResultRow | undefined> = new Array(nextStockCodes.length);
-
+      // ① 与 Vue 版 this.tableData.push(...) 保持一致：每只股票计算完即追加，UI 实时刷新。
       await runWithConcurrency(
         nextStockCodes,
-        async (target, index) => {
+        async (target) => {
           const [code, ...nameParts] = target.split(":");
           const name = nameParts.join(":") || code;
           const guba = await calcCount(code, nextDates);
-
-          rows[index] = {
+          const row: ResultRow = {
             stockName: name,
             code,
             guba,
             trend: calcTrend(guba, nextDates),
           };
+
+          // ② 通过函数式 setState 追加，避免并发场景下相互覆盖。
+          setTableData((previous) => [...previous, row]);
         },
         5,
       );
 
-      setTableData(rows.filter((item): item is ResultRow => !!item));
       pushFeedback("帖子统计查询完成", "success");
     } catch (error) {
       console.error("帖子统计查询失败:", error);
@@ -1729,7 +1799,10 @@ export default function Home() {
   }
 
 
-  const barChartDates = resultDates.length > 0 ? resultDates : dataType;
+  const barChartDates = useMemo(
+    () => (resultDates.length > 0 ? resultDates : dataType),
+    [resultDates, dataType],
+  );
 
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#f7fafc_0%,#eef4ff_42%,#f8fafc_100%)] px-3 py-6 text-slate-900 sm:px-5">
@@ -1760,43 +1833,102 @@ export default function Home() {
             ) : null}
 
             <div className="space-y-3">
-              <div className="relative">
-                <textarea
-                  ref={queryTextareaRef}
-                  className="min-h-28 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100"
-                  placeholder="请输入内容"
-                  value={queryCondition}
-                  onChange={(event) => handleQueryInput(event.target.value)}
-                  onFocus={() => {
-                    if (querySuggestions.length > 0) {
-                      setShowQuerySuggestionMenu(true);
-                    }
-                  }}
-                  onBlur={() => {
-                    window.setTimeout(() => {
-                      setShowQuerySuggestionMenu(false);
-                    }, 120);
-                  }}
-                />
+              <Popover
+                open={showQuerySuggestionMenu && querySuggestions.length > 0}
+                onOpenChange={(open) => {
+                  if (!open) {
+                    setShowQuerySuggestionMenu(false);
+                  }
+                }}
+              >
+                <PopoverAnchor asChild>
+                  <Textarea
+                    ref={queryTextareaRef}
+                    placeholder="请输入内容"
+                    minRows={2}
+                    maxRows={8}
+                    value={queryCondition}
+                    onChange={(event) => handleQueryInput(event.target.value)}
+                    onCompositionStart={handleQueryCompositionStart}
+                    onCompositionEnd={handleQueryCompositionEnd}
+                    onFocus={() => {
+                      if (querySuggestions.length > 0) {
+                        setShowQuerySuggestionMenu(true);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      // IME 合成中的回车/方向键属于输入法选词，交由系统处理，不拦截到建议菜单。
+                      if (isQueryComposingRef.current || event.nativeEvent.isComposing) {
+                        return;
+                      }
 
-                {showQuerySuggestionMenu && querySuggestions.length > 0 ? (
-                  <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
-                    {querySuggestions.map((item, index) => (
-                      <button
-                        key={`${item.suggestQuery}-${index}`}
-                        type="button"
-                        className="block w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-sky-50"
-                        onMouseDown={(event) => {
+                      if (!showQuerySuggestionMenu || querySuggestions.length === 0) {
+                        return;
+                      }
+
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setQuerySuggestionActiveIndex(
+                          (previous) => (previous + 1) % querySuggestions.length,
+                        );
+                        return;
+                      }
+
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setQuerySuggestionActiveIndex(
+                          (previous) =>
+                            (previous - 1 + querySuggestions.length) %
+                            querySuggestions.length,
+                        );
+                        return;
+                      }
+
+                      if (event.key === "Enter") {
+                        const target =
+                          querySuggestions[querySuggestionActiveIndex] ??
+                          querySuggestions[0];
+                        if (target) {
                           event.preventDefault();
-                          handleSelectSuggestion(item);
-                        }}
-                      >
-                        {item.suggestQuery}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
+                          handleSelectSuggestion(target);
+                        }
+                        return;
+                      }
+
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setShowQuerySuggestionMenu(false);
+                      }
+                    }}
+                  />
+                </PopoverAnchor>
+
+                <PopoverContent
+                  align="start"
+                  sideOffset={8}
+                  onOpenAutoFocus={(event) => event.preventDefault()}
+                  onCloseAutoFocus={(event) => event.preventDefault()}
+                >
+                  {querySuggestions.map((item, index) => (
+                    <button
+                      key={`${item.suggestQuery}-${index}`}
+                      type="button"
+                      className={`block w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                        index === querySuggestionActiveIndex
+                          ? "bg-sky-50 text-sky-700"
+                          : "text-slate-700 hover:bg-sky-50"
+                      }`}
+                      onMouseEnter={() => setQuerySuggestionActiveIndex(index)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        handleSelectSuggestion(item);
+                      }}
+                    >
+                      {item.suggestQuery}
+                    </button>
+                  ))}
+                </PopoverContent>
+              </Popover>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <button
@@ -1809,7 +1941,7 @@ export default function Home() {
                 </button>
 
                 <div className="text-sm text-slate-500">
-                  当前已加载 {stockCodes.length} 只股票，最近节假日 {Object.keys(holidays).length} 条
+                  当前已加载 {stockCodes.length} 只股票
                 </div>
               </div>
             </div>
