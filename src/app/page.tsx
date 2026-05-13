@@ -99,7 +99,27 @@ type MannKendallResult = {
   pValue: number;
 };
 
-const PROXY_ENDPOINT = "https://api.niumengke.top/koa/proxy";
+const LEGACY_PROXY_FALLBACK = "https://api.niumengke.top/koa/proxy";
+
+/**
+ * 代理入口：默认走同源 `/api/proxy`（见 `app/api/proxy/route.ts`），少一跳跨子域。
+ * 若需仍走旧 Koa 代理，设置 `NEXT_PUBLIC_PROXY_ENDPOINT`。
+ *
+ * 关于 JSONP：东方财富 gbapi 等返回的是纯 JSON，不是 `callback(...)` 脚本，浏览器无法用 JSONP 解析；
+ * 用 script 标签拉取只会语法错误，不能替代代理，故不采用 JSONP。
+ */
+function getProxyEndpoint(): string {
+  if (process.env.NEXT_PUBLIC_PROXY_ENDPOINT) {
+    return process.env.NEXT_PUBLIC_PROXY_ENDPOINT;
+  }
+
+  if (typeof window !== "undefined") {
+    return "/api/proxy";
+  }
+
+  return LEGACY_PROXY_FALLBACK;
+}
+
 const MAX_HISTORY_COUNT = 5;
 
 // 与 Vue 版一致：p-limit 控制股吧列表并发，单只股票失败不影响其它任务。
@@ -228,7 +248,7 @@ async function proxyRequest<T>({
   headers,
   data,
 }: ProxyRequestOptions): Promise<T> {
-  const response = await fetch(PROXY_ENDPOINT, {
+  const response = await fetch(getProxyEndpoint(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
