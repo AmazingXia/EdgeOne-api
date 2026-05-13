@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import pLimit from "p-limit";
 
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -100,6 +101,25 @@ type MannKendallResult = {
 
 const PROXY_ENDPOINT = "https://api.niumengke.top/koa/proxy";
 const MAX_HISTORY_COUNT = 5;
+
+// 与 Vue 版一致：p-limit 控制股吧列表并发，单只股票失败不影响其它任务。
+const gubaQueryLimit = pLimit(5);
+
+function createGubaTaskList(
+  list: string[],
+  handler: (target: string) => Promise<void>,
+): Promise<void>[] {
+  return list.map((target) =>
+    gubaQueryLimit(async () => {
+      try {
+        await handler(target);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log("error.message===>", message);
+      }
+    }),
+  );
+}
 
 const HIDDEN_COLUMNS: Record<string, boolean> = {
   SERIAL: true,
@@ -402,31 +422,6 @@ function compareValues(a: unknown, b: unknown): number {
   }
 
   return String(left).localeCompare(String(right), "zh-CN");
-}
-
-
-// 控制并发，避免帖子接口一次性打满。
-async function runWithConcurrency<T>(
-  items: T[],
-  worker: (item: T, index: number) => Promise<void>,
-  limit = 5,
-): Promise<void> {
-  let cursor = 0;
-
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const currentIndex = cursor;
-      cursor += 1;
-
-      try {
-        await worker(items[currentIndex], currentIndex);
-      } catch (error) {
-        console.error("任务执行失败:", error);
-      }
-    }
-  });
-
-  await Promise.all(runners);
 }
 
 
@@ -1495,8 +1490,9 @@ export default function Home() {
   async function getGubaCount(code: string, pageGroup = 1) {
     const requestPages = 2;
     const startPage = (pageGroup - 1) * requestPages + 1;
-    const endPage = pageGroup * requestPages;
-    const responses = await Promise.all(
+
+    // 同一批次两页并行：单页失败时仍合并成功页（Vue 里 Promise.all 会整批失败）。
+    const settled = await Promise.allSettled(
       Array.from({ length: requestPages }, (_, index) => {
         const page = startPage + index;
         const url = `https://gbapi.eastmoney.com/webarticlelist/api/Article/WebArticleList?code=${code}&p=${page}&ps=100&sorttype=0&plat=wap&version=200&product=guba&deviceid=1`;
@@ -1515,6 +1511,27 @@ export default function Home() {
         });
       }),
     );
+
+    const responses: Array<{
+      re?: Array<{
+        post_type?: number;
+        post_publish_time?: string;
+        post_last_time?: string;
+        post_user?: {
+          user_id?: string | number;
+        };
+      }>;
+    }> = [];
+
+    for (const item of settled) {
+      if (item.status === "fulfilled") {
+        responses.push(item.value);
+      } else {
+        const reason = item.reason;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        console.log("error.message===>", message);
+      }
+    }
 
     return responses.flatMap((response) =>
       (response.re || []).map((item) => ({
@@ -1634,25 +1651,22 @@ export default function Home() {
     setResultDates(nextDates);
 
     try {
-      // ① 与 Vue 版 this.tableData.push(...) 保持一致：每只股票计算完即追加，UI 实时刷新。
-      await runWithConcurrency(
-        nextStockCodes,
-        async (target) => {
-          const [code, ...nameParts] = target.split(":");
-          const name = nameParts.join(":") || code;
-          const guba = await calcCount(code, nextDates);
-          const row: ResultRow = {
-            stockName: name,
-            code,
-            guba,
-            trend: calcTrend(guba, nextDates),
-          };
+      // 与 Vue 版一致：createTaskList + p-limit，单只股票异常在 limit 内吞掉，Promise.all 仍 resolve。
+      const tasks = createGubaTaskList(nextStockCodes, async (target) => {
+        const [code, ...nameParts] = target.split(":");
+        const name = nameParts.join(":") || code;
+        const guba = await calcCount(code, nextDates);
+        const row: ResultRow = {
+          stockName: name,
+          code,
+          guba,
+          trend: calcTrend(guba, nextDates),
+        };
 
-          // ② 通过函数式 setState 追加，避免并发场景下相互覆盖。
-          setTableData((previous) => [...previous, row]);
-        },
-        5,
-      );
+        setTableData((previous) => [...previous, row]);
+      });
+
+      await Promise.all(tasks);
 
       pushFeedback("帖子统计查询完成", "success");
     } catch (error) {
